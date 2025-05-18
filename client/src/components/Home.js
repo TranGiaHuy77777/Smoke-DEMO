@@ -105,12 +105,12 @@ const Home = () => {
 
     const testimonials = [
         {
-            quote: 'I like to see how my body just improves every day and when I reach some body goals I am happy and satisfied. This app helped me so much because it makes me see how far I've come.',
+            quote: "I like to see how my body just improves every day and when I reach some body goals I am happy and satisfied. This app helped me so much because it makes me see how far I've come.",
             name: 'Sarah K.',
             avatar: '/img/avatar1.jpg' // Placeholder, you'll need to add actual images later
         },
         {
-            quote: 'What I like most is that the app is motivating. I like the fact that we receive reports on our health. I can already see a huge difference in my energy levels.',
+            quote: "What I like most is that the app is motivating. I like the fact that we receive reports on our health. I can already see a huge difference in my energy levels.",
             name: 'Michael T.',
             avatar: '/img/avatar2.jpg'
         }

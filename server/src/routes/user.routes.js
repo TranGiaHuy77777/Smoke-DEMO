@@ -2,6 +2,26 @@ const express = require('express');
 const router = express.Router();
 const { protect, authorize } = require('../middleware/auth.middleware');
 const { pool } = require('../config/database');
+const bcrypt = require('bcryptjs');
+const { createUser } = require('../database/db.utils');
+const { profileUpdateValidation } = require('../middleware/validator.middleware');
+
+// Get current user's role
+router.get('/role', protect, async (req, res) => {
+    try {
+        res.json({
+            success: true,
+            role: req.user.Role,
+            isActivated: req.user.IsActive === 1
+        });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({
+            success: false,
+            message: 'Lỗi khi lấy thông tin vai trò người dùng'
+        });
+    }
+});
 
 // Get user profile
 router.get('/profile', protect, async (req, res) => {
@@ -9,7 +29,7 @@ router.get('/profile', protect, async (req, res) => {
         const result = await pool.request()
             .input('UserID', req.user.UserID)
             .query(`
-        SELECT u.UserID, u.Email, u.FirstName, u.LastName, u.Role,
+        SELECT u.UserID, u.Email, u.FirstName, u.LastName, u.Role, u.PhoneNumber, u.Address, u.Avatar,
                m.MembershipID, m.Status as MembershipStatus,
                mp.Name as PlanName, mp.Description as PlanDescription
         FROM Users u
@@ -26,38 +46,83 @@ router.get('/profile', protect, async (req, res) => {
         console.error(error);
         res.status(500).json({
             success: false,
-            message: 'Error getting user profile'
+            message: 'Lỗi khi lấy thông tin người dùng'
         });
     }
 });
 
 // Update user profile
-router.put('/profile', protect, async (req, res) => {
+router.put('/profile', protect, profileUpdateValidation, async (req, res) => {
     try {
-        const { firstName, lastName } = req.body;
+        const { firstName, lastName, phoneNumber, address } = req.body;
 
         const result = await pool.request()
             .input('UserID', req.user.UserID)
             .input('FirstName', firstName)
             .input('LastName', lastName)
+            .input('PhoneNumber', phoneNumber || null)
+            .input('Address', address || null)
             .query(`
         UPDATE Users
         SET FirstName = @FirstName,
             LastName = @LastName,
+            PhoneNumber = @PhoneNumber,
+            Address = @Address,
             UpdatedAt = GETDATE()
-        OUTPUT INSERTED.UserID, INSERTED.Email, INSERTED.FirstName, INSERTED.LastName, INSERTED.Role
+        OUTPUT INSERTED.UserID, INSERTED.Email, INSERTED.FirstName, INSERTED.LastName, 
+               INSERTED.Role, INSERTED.PhoneNumber, INSERTED.Address, INSERTED.Avatar
         WHERE UserID = @UserID
       `);
 
         res.json({
             success: true,
+            message: 'Thông tin đã được cập nhật thành công',
             data: result.recordset[0]
         });
     } catch (error) {
         console.error(error);
         res.status(500).json({
             success: false,
-            message: 'Error updating user profile'
+            message: 'Lỗi khi cập nhật thông tin người dùng'
+        });
+    }
+});
+
+// Update avatar
+router.put('/avatar', protect, async (req, res) => {
+    try {
+        const { avatar } = req.body;
+
+        if (!avatar) {
+            return res.status(400).json({
+                success: false,
+                message: 'Vui lòng cung cấp đường dẫn ảnh đại diện'
+            });
+        }
+
+        const result = await pool.request()
+            .input('UserID', req.user.UserID)
+            .input('Avatar', avatar)
+            .query(`
+        UPDATE Users
+        SET Avatar = @Avatar,
+            UpdatedAt = GETDATE()
+        OUTPUT INSERTED.UserID, INSERTED.Avatar
+        WHERE UserID = @UserID
+      `);
+
+        res.json({
+            success: true,
+            message: 'Ảnh đại diện đã được cập nhật',
+            data: {
+                avatar: result.recordset[0].Avatar
+            }
+        });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({
+            success: false,
+            message: 'Lỗi khi cập nhật ảnh đại diện'
         });
     }
 });
@@ -191,6 +256,133 @@ router.get('/', protect, authorize('admin'), async (req, res) => {
         res.status(500).json({
             success: false,
             message: 'Error getting users'
+        });
+    }
+});
+
+// Add new user (Admin only)
+router.post('/', protect, authorize('admin'), async (req, res) => {
+    try {
+        const { email, password, firstName, lastName, role = 'member', phoneNumber, address, avatar } = req.body;
+
+        const user = await createUser({
+            email,
+            password,
+            firstName,
+            lastName,
+            role,
+            phoneNumber,
+            address,
+            avatar
+        });
+
+        res.status(201).json({
+            success: true,
+            message: 'User added successfully',
+            data: user
+        });
+    } catch (error) {
+        console.error(error);
+        if (error.message === 'User already exists') {
+            return res.status(400).json({
+                success: false,
+                message: 'User already exists'
+            });
+        }
+        res.status(500).json({
+            success: false,
+            message: 'Error adding user'
+        });
+    }
+});
+
+/**
+ * @route GET /api/users/status
+ * @desc Get user's role and membership status
+ * @access Private
+ */
+router.get('/status', protect, async (req, res) => {
+    try {
+        // Get user details with role
+        const userResult = await pool.request()
+            .input('UserID', req.user.UserID)
+            .query(`
+                SELECT 
+                    UserID, 
+                    Email, 
+                    FirstName, 
+                    LastName, 
+                    Role, 
+                    IsActive,
+                    LastLoginAt
+                FROM Users
+                WHERE UserID = @UserID
+            `);
+
+        if (userResult.recordset.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: 'User not found'
+            });
+        }
+
+        const user = userResult.recordset[0];
+
+        // Get active membership if exists
+        const membershipResult = await pool.request()
+            .input('UserID', req.user.UserID)
+            .query(`
+                SELECT 
+                    um.MembershipID,
+                    um.PlanID,
+                    um.StartDate,
+                    um.EndDate,
+                    um.Status as MembershipStatus,
+                    mp.Name as PlanName,
+                    mp.Price as PlanPrice,
+                    mp.Duration as PlanDuration,
+                    DATEDIFF(day, GETDATE(), um.EndDate) as DaysRemaining
+                FROM UserMemberships um
+                JOIN MembershipPlans mp ON um.PlanID = mp.PlanID
+                WHERE um.UserID = @UserID
+                AND um.Status = 'active'
+                AND um.EndDate > GETDATE()
+            `);
+
+        const membership = membershipResult.recordset[0] || null;
+
+        // Return combined user status information
+        res.json({
+            success: true,
+            data: {
+                user: {
+                    id: user.UserID,
+                    email: user.Email,
+                    firstName: user.FirstName,
+                    lastName: user.LastName,
+                    role: user.Role,
+                    isActive: user.IsActive === 1,
+                    lastLogin: user.LastLoginAt
+                },
+                membership: membership ? {
+                    id: membership.MembershipID,
+                    planId: membership.PlanID,
+                    planName: membership.PlanName,
+                    startDate: membership.StartDate,
+                    endDate: membership.EndDate,
+                    daysRemaining: membership.DaysRemaining,
+                    status: membership.MembershipStatus
+                } : null,
+                accountType: user.Role,
+                isSubscribed: membership !== null
+            }
+        });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({
+            success: false,
+            message: 'Error fetching user status',
+            error: error.message
         });
     }
 });
